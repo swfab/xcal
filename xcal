@@ -11,305 +11,313 @@ import re
 import subprocess
 import sys
 
-if sys.version_info < (3,0,0):
+PY2 = sys.version_info < (3,0,0)
+if PY2:
     input = raw_input
 
 prop_name = 'libinput Calibration Matrix'
 prop_name = 'Coordinate Transformation Matrix'
 
+# XInput ---------------------------------------------------------------------
+class XInput():
 
-def xinput(*args):
-    cmd = ['/usr/bin/xinput']
-    for arg in args:
-        cmd.append(arg)
-    retval = subprocess.check_output(cmd)
-    if sys.version_info < (3,0,0):
-        return retval
-    else:
-        return retval.decode("utf-8")
+    # Public Functions -------------------------------------------------------
 
+    def get_devs(self):
+        devs = {int(groups[1]): groups[0] for groups in
+                re.findall(r'↳ (\w.+\w)\s+id=(\d+)\D+slave *pointer',
+                           self._xinput('--list', '--short'))}
+        if not devs:
+            print('No suitable input devices found')
+            exit(1)
+        return devs
 
-def get_devs():
-    devs = {int(groups[1]): groups[0] for groups in
-            re.findall(r'↳ (\w.+\w)\s+id=(\d+)\D+slave *pointer',
-                       xinput('--list', '--short'))}
-    if not devs:
-        print('No suitable input devices found')
-        exit(1)
-    return devs
+    def get_cal(self, dev):
+        stdout = self._xinput('--list-props', str(dev))
+        line = re.search(prop_name + r'.*:\s+(\S.+)', stdout)
+        if not line:
+            print('Cal property not set; is this an xinput device?')
+            exit(1)
+        vals = np.matrix(line.group(1)).reshape(3, 3)
 
+        print('Old calibration:')
+        print(vals)
+        print("")
+        return vals, np.linalg.inv(vals)
 
-def print_devs(devs):
-    print('Pointer devices:')
-    print('%4s %35s' % ('ID', 'Name'))
-    for i, name in sorted(devs.items()):
-        print('%4d %35s' % (i, name))
-    print("")
+    def set_cal(self, dev, new_cal):
+        cal_array = [str(x)+',' for x in new_cal.flatten().tolist()[0]]
+        self._xinput('--set-prop', str(dev), prop_name, *cal_array)
 
+    # Private Functions ------------------------------------------------------
 
-def choose_preferred(devs):
-    preferred = [i for (i, n) in devs.items() if 'touch' in n.lower()]
-    if preferred:
-        return preferred[0]
-    return next(iter(devs.keys()))
-
-
-def choose_dev(devs, preferred):
-    while True:
-        devstr = input('Device to calibrate [%d]: ' % preferred)
-        if not devstr:
-            return preferred
-        try:
-            dev = int(devstr)
-        except ValueError:
-            continue
-        if dev in devs.keys():
-            return dev
+    def _xinput(self, *args):
+        cmd = ['/usr/bin/xinput']
+        for arg in args:
+            cmd.append(arg)
+        retval = subprocess.check_output(cmd)
+        if PY2:
+            return retval
+        else:
+            return retval.decode("utf-8")
 
 
-def read_cal(dev):
-    stdout = xinput('--list-props', str(dev))
-    line = re.search(prop_name + r'.*:\s+(\S.+)', stdout)
-    if not line:
-        print('Cal property not set; is this an xinput device?')
-        exit(1)
-    vals = np.matrix(line.group(1)).reshape(3, 3)
-
-    print('Old calibration:')
-    print(vals)
-    print("")
-    return vals, np.linalg.inv(vals)
-
-
-def ask(q):
-    do = input(q + ' [y]: ')
-    return (do or 'y').lower() == 'y'
-
-
-def choose_points():
-    p_min, default = 3, 4
-
-    while True:
-        p_str = input('Point count (min %d) [%d]: ' %
-                      (p_min, default))
-        if not p_str:
-            return default
-        try:
-            p = int(p_str)
-        except ValueError:
-            continue
-
-        if p >= p_min:
-            return p
-
-
-def transform(x, y, cal):
-    p = np.matrix([[x], [y], [1]])
-    out = np.matmul(cal, p)
-    return out.item(0), out.item(1)
-
-
+# Calibration ----------------------------------------------------------------
 class Calibration():
 
-    def do(self, n_points, old_cal_inv, new_cal=None):
-        self.n_points = n_points
-        self.old_cal_inv = old_cal_inv
-        self.new_cal = new_cal
+    # Pubblic Functions ------------------------------------------------------
 
-        if sys.version_info[0] < 3:
+    def show(self, n_points, old_cal_inv, new_cal=None):
+        self._n_points = n_points
+        self._old_cal_inv = old_cal_inv
+        self._new_cal = new_cal
+
+        if PY2:
             from Tkinter import Tk, Canvas
         else:
             from tkinter import Tk, Canvas
 
         from math import ceil, sqrt
 
-        self.root = Tk()
-        self.X, self.Y = None, None
-        self.root.attributes('-fullscreen', True)
-        self.canvas = Canvas(self.root)
+        self._root = Tk()
+        self._X, self._Y = None, None
+        self._root.attributes('-fullscreen', True)
+        self._canvas = Canvas(self._root)
 
-        self.canvas.bind('<Configure>', self.resize)
-        self.canvas.pack(expand=True, fill='both')
+        self._canvas.bind('<Configure>', self._on_resize)
+        self._canvas.pack(expand=True, fill='both')
 
-        self.legend_y = None
+        self._legend_y = None
 
-        self.point, self.points = {}, []
-        self.index = -1
-        self.n_cols = int(ceil(sqrt(self.n_points)))
-        self.n_rows = int(ceil(self.n_points / self.n_cols))
-        self.sensitive = False
+        self._point, self._points = {}, []
+        self._index = -1
+        self._n_cols = int(ceil(sqrt(self._n_points)))
+        self._n_rows = int(ceil(self._n_points / self._n_cols))
+        self._sensitive = False
 
-        self.root.bind('<Escape>', self.cancel_cal)
-        self.canvas.bind('<Escape>', self.cancel_cal)
+        self._root.bind('<Escape>', self._on_cancel_cal)
+        self._canvas.bind('<Escape>', self._on_cancel_cal)
 
-        self.canvas.bind('<Button-1>', self.click)
+        self._canvas.bind('<Button-1>', self._on_click)
 
-        self.root.mainloop()
+        self._root.mainloop()
 
-        return self.points
+        return self._points
 
-    def resize(self, event):
-        self.X, self.Y = event.width, event.height
-        self.draw_legends()
-        self.next_point()
+    def calibrate(self, points, disable_rot):
+        if disable_rot:
+            '''
+            [mx 1] [a 0]   [sx 1]
+            [mx 1] [e 1] = [sx 1]
+            [... ]         [... ]
 
-    def legend(self, text, colour='#000'):
-        self.canvas.create_text(self.X/2, self.legend_y, text=text, fill=colour)
-        self.legend_y += 12
-
-    def draw_legends(self):
-        self.legend_y = self.Y * 0.3
-        self.legend('Esc to cancel.')
-        self.legend('Raw point in black')
-        self.legend('Old cal point in blue', '#00F')
-        self.legend('Target point in red', '#F00')
-        if self.new_cal is not None:
-            self.legend('New cal point in green', '#0F0')
-
-    def next_point(self):
-        self.index += 1
-        if self.index >= self.n_points:
-            self.sensitive = False
-            self.root.after(1000, self.root.destroy)
+            [my 1] [d 0]   [sy 1]
+            [my 1] [f 1] = [sy 1]
+            [... ]         [... ]
+            '''
+            tx, qual_x = self._fit(screen_pts=((p['sx'],) for p in points),
+                             mouse_pts=((p['mx'],) for p in points))
+            ty, qual_y = self._fit(screen_pts=((p['sy'],) for p in points),
+                             mouse_pts=((p['my'],) for p in points))
+            m_transform = np.matrix([
+                [tx[0, 0], 0,        0],
+                [0,        ty[0, 0], 0],
+                [tx[1, 0], ty[1, 0], 1]])
+            quality = min(qual_x, qual_y)
         else:
-            self.sensitive = True
-            x = 0.1 + 0.8*(self.index % self.n_cols)/(self.n_cols - 1)
-            y = 0.1 + 0.8*(self.index // self.n_cols)/(self.n_rows - 1)
-            self.point = {'sx': x, 'sy': y}
+            '''
+            m_mouse * m_transform = m_screen
+            [mx my 1] [a b 0]   [sx sy 1]
+            [mx my 1] [c d 0] = [sx sy 1]
+            [...    ] [e f 1]   [...    ]
+            '''
+            m_transform, quality = self._fit(screen_pts=[(p['sx'], p['sy']) for p in points],
+                                       mouse_pts=[(p['mx'], p['my']) for p in points])
+            m_transform[:, 2] = ([0], [0], [1])
 
-            self.draw_target(self.point['sx'], self.point['sy'])
+        m_transform = m_transform.getT()
+        return m_transform, quality
 
-    def cross(self, px, py, colour):
-        x, y = px*self.X, py*self.Y
-        self.canvas.create_line(x-10, y, x+10, y, fill=colour)
-        self.canvas.create_line(x, y-10, x, y+10, fill=colour)
+    # Private Functions ------------------------------------------------------
 
-    def draw_target(self, px, py):
-        x, y = px*self.X, py*self.Y
-        self.canvas.create_oval(x-10, y-10, x+10, y+10, outline='#F00', width=3)
-        self.cross(px, py, '#F00')
+    def _transform(self, x, y, cal):
+        p = np.matrix([[x], [y], [1]])
+        out = np.matmul(cal, p)
+        return out.item(0), out.item(1)
 
-    def cancel_cal(self, _):
+    def _fit(self, screen_pts, mouse_pts):
+        from math import log10
+        p1 = []
+        for p in screen_pts:
+            p1.append([p[0], 1])
+        m_screen = np.matrix(p1)
+        p2 = []
+        for p in mouse_pts:
+            p2.append([p[0], 1])
+        m_mouse = np.matrix(p2)
+        m_transform, residuals, rank, singular = np.linalg.lstsq(m_mouse, m_screen)
+        quality = -log10(residuals.sum())
+        return m_transform, quality
+
+    def _legend(self, text, colour='#000'):
+        self._canvas.create_text(self._X/2, self._legend_y, text=text, fill=colour)
+        self._legend_y += 12
+
+    def _draw_legends(self):
+        self._legend_y = self._Y * 0.3
+        self._legend('Esc to cancel.')
+        self._legend('Raw point in black')
+        self._legend('Old cal point in blue', '#00F')
+        self._legend('Target point in red', '#F00')
+        if self._new_cal is not None:
+            self._legend('New cal point in green', '#0F0')
+
+    def _next_point(self):
+        self._index += 1
+        if self._index >= self._n_points:
+            self._sensitive = False
+            self._root.after(1000, self._root.destroy)
+        else:
+            self._sensitive = True
+            x = 0.1 + 0.8*(self._index % self._n_cols)/(self._n_cols - 1)
+            y = 0.1 + 0.8*(self._index // self._n_cols)/(self._n_rows - 1)
+            self._point = {'sx': x, 'sy': y}
+
+            self._draw_target(self._point['sx'], self._point['sy'])
+
+    def _cross(self, px, py, colour):
+        x, y = px * self._X, py * self._Y
+        self._canvas.create_line(x-10, y, x+10, y, fill=colour)
+        self._canvas.create_line(x, y-10, x, y+10, fill=colour)
+
+    def _draw_target(self, px, py):
+        x, y = px * self._X, py * self._Y
+        self._canvas.create_oval(x-10, y-10, x+10, y+10, outline='#F00', width=3)
+        self._cross(px, py, '#F00')
+
+    def _indicator(self, sx, sy, px, py, colour):
+        self._canvas.create_line(self._X*sx, self._Y*sy, self._X*px, self._Y*py, fill=colour)
+        self._cross(px, py, colour)
+
+    # Events -----------------------------------------------------------------
+
+    def _on_cancel_cal(self, event):
         print('Calibration cancelled')
-        self.points.clear()
-        self.root.destroy()
+        self._points.clear()
+        self._root.destroy()
 
-    def indicator(self, sx, sy, px, py, colour):
-        self.canvas.create_line(self.X*sx, self.Y*sy, self.X*px, self.Y*py, fill=colour)
-        self.cross(px, py, colour)
-
-    def click(self, event):
-        if not self.sensitive:
+    def _on_click(self, event):
+        if not self._sensitive:
             return
-        self.sensitive = False
+        self._sensitive = False
 
-        sx, sy = self.point['sx'], self.point['sy']
+        sx, sy = self._point['sx'], self._point['sy']
 
-        ox, oy = event.x/self.X, event.y/self.Y  # old-calibrated
-        self.indicator(sx, sy, ox, oy, '#00F')
+        ox, oy = event.x/self._X, event.y/self._Y  # old-calibrated
+        self._indicator(sx, sy, ox, oy, '#00F')
 
-        ux, uy = transform(ox, oy, self.old_cal_inv)  # uncalibrated
-        self.indicator(sx, sy, ux, uy, '#000')
+        ux, uy = self._transform(ox, oy, self._old_cal_inv)  # uncalibrated
+        self._indicator(sx, sy, ux, uy, '#000')
 
-        if self.new_cal is not None:
-            nx, ny = transform(ux, uy, self.new_cal)  # new-calibrated (test only)
-            self.indicator(sx, sy, nx, ny, '#0F0')
+        if self._new_cal is not None:
+            nx, ny = self._transform(ux, uy, self._new_cal)  # new-calibrated (test only)
+            self._indicator(sx, sy, nx, ny, '#0F0')
 
-        self.point.update({'mx': ux, 'my': uy})
-        self.points.append(self.point)
+        self._point.update({'mx': ux, 'my': uy})
+        self._points.append(self._point)
 
-        self.canvas.after(500, self.next_point)
+        self._canvas.after(500, self._next_point)
 
-
-def fit(screen_pts, mouse_pts):
-    from math import log10
-    p1 = []
-    for p in screen_pts:
-        p1.append([p[0], 1])
-    m_screen = np.matrix(p1)
-    p2 = []
-    for p in mouse_pts:
-        p2.append([p[0], 1])
-    m_mouse = np.matrix(p2)
-    m_transform, residuals, rank, singular = np.linalg.lstsq(m_mouse, m_screen)
-    quality = -log10(residuals.sum())
-    return m_transform, quality
-
-
-def calibrate(points, disable_rot):
-    if disable_rot:
-        '''
-        [mx 1] [a 0]   [sx 1]
-        [mx 1] [e 1] = [sx 1]
-        [... ]         [... ]
-
-        [my 1] [d 0]   [sy 1]
-        [my 1] [f 1] = [sy 1]
-        [... ]         [... ]
-        '''
-        tx, qual_x = fit(screen_pts=((p['sx'],) for p in points),
-                         mouse_pts=((p['mx'],) for p in points))
-        ty, qual_y = fit(screen_pts=((p['sy'],) for p in points),
-                         mouse_pts=((p['my'],) for p in points))
-        m_transform = np.matrix([
-            [tx[0, 0], 0,        0],
-            [0,        ty[0, 0], 0],
-            [tx[1, 0], ty[1, 0], 1]])
-        quality = min(qual_x, qual_y)
-    else:
-        '''
-        m_mouse * m_transform = m_screen
-        [mx my 1] [a b 0]   [sx sy 1]
-        [mx my 1] [c d 0] = [sx sy 1]
-        [...    ] [e f 1]   [...    ]
-        '''
-        m_transform, quality = fit(screen_pts=[(p['sx'], p['sy']) for p in points],
-                                   mouse_pts=[(p['mx'], p['my']) for p in points])
-        m_transform[:, 2] = ([0], [0], [1])
-
-    m_transform = m_transform.getT()
-    return m_transform, quality
-
-
-def use_cal(dev, new_cal):
-    cal_array = [str(x)+',' for x in new_cal.flatten().tolist()[0]]
-    xinput('--set-prop', str(dev), prop_name, *cal_array)
-
+    def _on_resize(self, event):
+        self._X, self._Y = event.width, event.height
+        self._draw_legends()
+        self._next_point()
 
 # Command Line Interface -----------------------------------------------------
 class CLI():
 
+    # Public Functions -------------------------------------------------------
+
     def run(self):
-        devs = get_devs()
-        print_devs(devs)
-        preferred = choose_preferred(devs)
-        dev = choose_dev(devs, preferred)
+        xinput = XInput()
+        calibration = Calibration()
+
+        devs = xinput.get_devs()
+        self._print_devs(devs)
+        preferred = self._choose_preferred(devs)
+        dev = self._choose_dev(devs, preferred)
         print("")
 
-        old_cal, old_cal_inv = read_cal(dev)
+        old_cal, old_cal_inv = xinput.get_cal(dev)
 
         new_cal = None
-        if ask('Calibrate?'):
-            n_points = choose_points()
-            disable_rot = ask('Disable rotation?')
+        if self._ask('Calibrate?'):
+            n_points = self._choose_points()
+            disable_rot = self._ask('Disable rotation?')
             print("")
 
-            points = Calibration().Show(n_points, old_cal_inv)
+            points = calibration.show(n_points, old_cal_inv)
             if points:
-                new_cal, quality = calibrate(points, disable_rot)
+                new_cal, quality = calibration.calibrate(points, disable_rot)
 
                 print('New calibration:')
                 print(new_cal)
                 print('Quality (should be at least 3): %.1f' % quality)
                 print("")
 
-        if ask('Test?'):
-            n_points = choose_points()
-            ShowTk().ShowTk(n_points, old_cal_inv, new_cal)
+        if self._ask('Test?'):
+            n_points = self._choose_points()
+            calibration.show(n_points, old_cal_inv, new_cal)
 
-        if new_cal is not None and ask('Use calibration?'):
-            use_cal(dev, new_cal)
+        if new_cal is not None and self._ask('Use calibration?'):
+            xinput.set_cal(dev, new_cal)
 
+    # Private Functions ------------------------------------------------------
+
+    def _ask(self, q):
+        do = input(q + ' [y]: ')
+        return (do or 'y').lower() == 'y'
+
+    def _print_devs(self, devs):
+        print('Pointer devices:')
+        print('%4s %35s' % ('ID', 'Name'))
+        for i, name in sorted(devs.items()):
+            print('%4d %35s' % (i, name))
+        print("")
+
+    def _choose_preferred(self, devs):
+        preferred = [i for (i, n) in devs.items() if 'touch' in n.lower()]
+        if preferred:
+            return preferred[0]
+        return next(iter(devs.keys()))
+
+    def _choose_dev(self, devs, preferred):
+        while True:
+            devstr = input('Device to calibrate [%d]: ' % preferred)
+            if not devstr:
+                return preferred
+            try:
+                dev = int(devstr)
+            except ValueError:
+                continue
+            if dev in devs.keys():
+                return dev
+
+    def _choose_points(self):
+        p_min, default = 3, 4
+
+        while True:
+            p_str = input('Point count (min %d) [%d]: ' %
+                          (p_min, default))
+            if not p_str:
+                return default
+            try:
+                p = int(p_str)
+            except ValueError:
+                continue
+
+            if p >= p_min:
+                return p
 
 # Graphical User Interface ---------------------------------------------------
 class GUI():
@@ -331,7 +339,6 @@ def main():
                         action = "store_true",
                         default = False,
                         help = "run the calibration in gui mode")
-
     args = parser.parse_args()
 
     if args.activate:
