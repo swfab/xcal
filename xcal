@@ -16,7 +16,7 @@ if PY2:
     input = raw_input
 
 prop_name = 'libinput Calibration Matrix'
-prop_name = 'Coordinate Transformation Matrix'
+#prop_name = 'Coordinate Transformation Matrix'
 
 # XInput ---------------------------------------------------------------------
 class XInput():
