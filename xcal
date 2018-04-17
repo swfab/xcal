@@ -1,9 +1,11 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-# requires python-tk, python-numpy
+# requires python-tk, python-numpy, python-configparser
 
 from __future__ import division
 from __future__ import print_function
+import argparse
+import configparser
 import numpy as np
 import re
 import subprocess
@@ -109,7 +111,7 @@ def transform(x, y, cal):
 
 class Calibration():
 
-    def Show(self, n_points, old_cal_inv, new_cal=None):
+    def do(self, n_points, old_cal_inv, new_cal=None):
         self.n_points = n_points
         self.old_cal_inv = old_cal_inv
         self.new_cal = new_cal
@@ -274,44 +276,71 @@ def use_cal(dev, new_cal):
     xinput('--set-prop', str(dev), prop_name, *cal_array)
 
 
-def main_cli():
-    devs = get_devs()
-    print_devs(devs)
-    preferred = choose_preferred(devs)
-    dev = choose_dev(devs, preferred)
-    print("")
+# Command Line Interface -----------------------------------------------------
+class CLI():
 
-    old_cal, old_cal_inv = read_cal(dev)
-
-    new_cal = None
-    if ask('Calibrate?'):
-        n_points = choose_points()
-        disable_rot = ask('Disable rotation?')
+    def run(self):
+        devs = get_devs()
+        print_devs(devs)
+        preferred = choose_preferred(devs)
+        dev = choose_dev(devs, preferred)
         print("")
 
-        points = Calibration().Show(n_points, old_cal_inv)
-        if points:
-            new_cal, quality = calibrate(points, disable_rot)
+        old_cal, old_cal_inv = read_cal(dev)
 
-            print('New calibration:')
-            print(new_cal)
-            print('Quality (should be at least 3): %.1f' % quality)
+        new_cal = None
+        if ask('Calibrate?'):
+            n_points = choose_points()
+            disable_rot = ask('Disable rotation?')
             print("")
 
-    if ask('Test?'):
-        n_points = choose_points()
-        ShowTk().ShowTk(n_points, old_cal_inv, new_cal)
+            points = Calibration().Show(n_points, old_cal_inv)
+            if points:
+                new_cal, quality = calibrate(points, disable_rot)
 
-    if new_cal is not None and ask('Use calibration?'):
-        use_cal(dev, new_cal)
+                print('New calibration:')
+                print(new_cal)
+                print('Quality (should be at least 3): %.1f' % quality)
+                print("")
+
+        if ask('Test?'):
+            n_points = choose_points()
+            ShowTk().ShowTk(n_points, old_cal_inv, new_cal)
+
+        if new_cal is not None and ask('Use calibration?'):
+            use_cal(dev, new_cal)
 
 
-def main_gui():
-    pass
+# Graphical User Interface ---------------------------------------------------
+class GUI():
+
+    def run(self):
+        pass
 
 
+# Main -----------------------------------------------------------------------
 def main():
-    main_cli()
 
+    parser = argparse.ArgumentParser()
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-a", "--activate",
+                        action = "store_true",
+                        default = False,
+                        help = "activate the last saved calibration")
+    group.add_argument("-g", "--gui",
+                        action = "store_true",
+                        default = False,
+                        help = "run the calibration in gui mode")
+
+    args = parser.parse_args()
+
+    if args.activate:
+        pass
+    elif args.gui:
+        GUI().run()
+    else:
+        CLI().run()
+
+# Entry -----------------------------------------------------------------------
 if __name__ == '__main__':
     main()
