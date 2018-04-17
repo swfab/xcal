@@ -1,19 +1,30 @@
-#!/usr/bin/env python3
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+# requires python-tk, python-numpy
 
-# requires python3-tk, python3-numpy
-
-import re
+from __future__ import division
+from __future__ import print_function
 import numpy as np
-from subprocess import run, PIPE
+import re
+import subprocess
+import sys
 
+if sys.version_info < (3,0,0):
+    input = raw_input
 
 prop_name = 'libinput Calibration Matrix'
+prop_name = 'Coordinate Transformation Matrix'
 
 
 def xinput(*args):
-    return run(args=('/usr/bin/xinput', *args),
-               stdout=PIPE, check=True,
-               universal_newlines=True).stdout
+    cmd = ['/usr/bin/xinput']
+    for arg in args:
+        cmd.append(arg)
+    retval = subprocess.check_output(cmd)
+    if sys.version_info < (3,0,0):
+        return retval
+    else:
+        return retval.decode("utf-8")
 
 
 def get_devs():
@@ -31,7 +42,7 @@ def print_devs(devs):
     print('%4s %35s' % ('ID', 'Name'))
     for i, name in sorted(devs.items()):
         print('%4d %35s' % (i, name))
-    print()
+    print("")
 
 
 def choose_preferred(devs):
@@ -64,7 +75,7 @@ def read_cal(dev):
 
     print('Old calibration:')
     print(vals)
-    print()
+    print("")
     return vals, np.linalg.inv(vals)
 
 
@@ -96,114 +107,128 @@ def transform(x, y, cal):
     return out.item(0), out.item(1)
 
 
-def show_tk(n_points, old_cal_inv, new_cal=None):
-    from tkinter import Tk, Canvas
-    from math import ceil, sqrt
+class Calibration():
 
-    root = Tk()
-    X, Y = None, None
-    root.attributes('-fullscreen', True)
-    canvas = Canvas(root)
+    def Show(self, n_points, old_cal_inv, new_cal=None):
+        self.n_points = n_points
+        self.old_cal_inv = old_cal_inv
+        self.new_cal = new_cal
 
-    def resize(event):
-        nonlocal X, Y
-        X, Y = event.width, event.height
-        draw_legends()
-        next_point()
-    canvas.bind('<Configure>', resize)
-    canvas.pack(expand=True, fill='both')
-
-    legend_y = None
-
-    def legend(text, colour='#000'):
-        nonlocal legend_y
-        canvas.create_text(X/2, legend_y, text=text, fill=colour)
-        legend_y += 12
-
-    def draw_legends():
-        nonlocal legend_y
-        legend_y = Y * 0.3
-        legend('Esc to cancel.')
-        legend('Raw point in black')
-        legend('Old cal point in blue', '#00F')
-        legend('Target point in red', '#F00')
-        if new_cal is not None:
-            legend('New cal point in green', '#0F0')
-
-    point, points = {}, []
-    index = -1
-    n_cols = int(ceil(sqrt(n_points)))
-    n_rows = int(ceil(n_points / n_cols))
-    sensitive = False
-
-    def next_point():
-        nonlocal point, index, sensitive
-        index += 1
-        if index >= n_points:
-            sensitive = False
-            root.after(1000, root.destroy)
+        if sys.version_info[0] < 3:
+            from Tkinter import Tk, Canvas
         else:
-            sensitive = True
-            x = 0.1 + 0.8*(index % n_cols)/(n_cols - 1)
-            y = 0.1 + 0.8*(index // n_cols)/(n_rows - 1)
-            point = {'sx': x, 'sy': y}
+            from tkinter import Tk, Canvas
 
-            draw_target(point['sx'], point['sy'])
+        from math import ceil, sqrt
 
-    def cross(px, py, colour):
-        x, y = px*X, py*Y
-        canvas.create_line(x-10, y, x+10, y, fill=colour)
-        canvas.create_line(x, y-10, x, y+10, fill=colour)
+        self.root = Tk()
+        self.X, self.Y = None, None
+        self.root.attributes('-fullscreen', True)
+        self.canvas = Canvas(self.root)
 
-    def draw_target(px, py):
-        x, y = px*X, py*Y
-        canvas.create_oval(x-10, y-10, x+10, y+10, outline='#F00', width=3)
-        cross(px, py, '#F00')
+        self.canvas.bind('<Configure>', self.resize)
+        self.canvas.pack(expand=True, fill='both')
 
-    def cancel_cal(_):
+        self.legend_y = None
+
+        self.point, self.points = {}, []
+        self.index = -1
+        self.n_cols = int(ceil(sqrt(self.n_points)))
+        self.n_rows = int(ceil(self.n_points / self.n_cols))
+        self.sensitive = False
+
+        self.root.bind('<Escape>', self.cancel_cal)
+        self.canvas.bind('<Escape>', self.cancel_cal)
+
+        self.canvas.bind('<Button-1>', self.click)
+
+        self.root.mainloop()
+
+        return self.points
+
+    def resize(self, event):
+        self.X, self.Y = event.width, event.height
+        self.draw_legends()
+        self.next_point()
+
+    def legend(self, text, colour='#000'):
+        self.canvas.create_text(self.X/2, self.legend_y, text=text, fill=colour)
+        self.legend_y += 12
+
+    def draw_legends(self):
+        self.legend_y = self.Y * 0.3
+        self.legend('Esc to cancel.')
+        self.legend('Raw point in black')
+        self.legend('Old cal point in blue', '#00F')
+        self.legend('Target point in red', '#F00')
+        if self.new_cal is not None:
+            self.legend('New cal point in green', '#0F0')
+
+    def next_point(self):
+        self.index += 1
+        if self.index >= self.n_points:
+            self.sensitive = False
+            self.root.after(1000, self.root.destroy)
+        else:
+            self.sensitive = True
+            x = 0.1 + 0.8*(self.index % self.n_cols)/(self.n_cols - 1)
+            y = 0.1 + 0.8*(self.index // self.n_cols)/(self.n_rows - 1)
+            self.point = {'sx': x, 'sy': y}
+
+            self.draw_target(self.point['sx'], self.point['sy'])
+
+    def cross(self, px, py, colour):
+        x, y = px*self.X, py*self.Y
+        self.canvas.create_line(x-10, y, x+10, y, fill=colour)
+        self.canvas.create_line(x, y-10, x, y+10, fill=colour)
+
+    def draw_target(self, px, py):
+        x, y = px*self.X, py*self.Y
+        self.canvas.create_oval(x-10, y-10, x+10, y+10, outline='#F00', width=3)
+        self.cross(px, py, '#F00')
+
+    def cancel_cal(self, _):
         print('Calibration cancelled')
-        points.clear()
-        root.destroy()
-    root.bind('<Escape>', cancel_cal)
-    canvas.bind('<Escape>', cancel_cal)
+        self.points.clear()
+        self.root.destroy()
 
-    def indicator(sx, sy, px, py, colour):
-        canvas.create_line(X*sx, Y*sy, X*px, Y*py, fill=colour)
-        cross(px, py, colour)
+    def indicator(self, sx, sy, px, py, colour):
+        self.canvas.create_line(self.X*sx, self.Y*sy, self.X*px, self.Y*py, fill=colour)
+        self.cross(px, py, colour)
 
-    def click(event):
-        nonlocal sensitive
-        if not sensitive:
+    def click(self, event):
+        if not self.sensitive:
             return
-        sensitive = False
-    
-        sx, sy = point['sx'], point['sy']
+        self.sensitive = False
 
-        ox, oy = event.x/X, event.y/Y  # old-calibrated
-        indicator(sx, sy, ox, oy, '#00F')
+        sx, sy = self.point['sx'], self.point['sy']
 
-        ux, uy = transform(ox, oy, old_cal_inv)  # uncalibrated
-        indicator(sx, sy, ux, uy, '#000')
+        ox, oy = event.x/self.X, event.y/self.Y  # old-calibrated
+        self.indicator(sx, sy, ox, oy, '#00F')
 
-        if new_cal is not None:
-            nx, ny = transform(ux, uy, new_cal)  # new-calibrated (test only)
-            indicator(sx, sy, nx, ny, '#0F0')
+        ux, uy = transform(ox, oy, self.old_cal_inv)  # uncalibrated
+        self.indicator(sx, sy, ux, uy, '#000')
 
-        point.update({'mx': ux, 'my': uy})
-        points.append(point)
+        if self.new_cal is not None:
+            nx, ny = transform(ux, uy, self.new_cal)  # new-calibrated (test only)
+            self.indicator(sx, sy, nx, ny, '#0F0')
 
-        canvas.after(500, next_point)
-    canvas.bind('<Button-1>', click)
+        self.point.update({'mx': ux, 'my': uy})
+        self.points.append(self.point)
 
-    root.mainloop()
-
-    return points
+        self.canvas.after(500, self.next_point)
 
 
 def fit(screen_pts, mouse_pts):
     from math import log10
-    m_screen = np.matrix([[*p, 1] for p in screen_pts])
-    m_mouse = np.matrix([[*p, 1] for p in mouse_pts])
+    p1 = []
+    for p in screen_pts:
+        p1.append([p[0], 1])
+    m_screen = np.matrix(p1)
+    p2 = []
+    for p in mouse_pts:
+        p2.append([p[0], 1])
+    m_mouse = np.matrix(p2)
     m_transform, residuals, rank, singular = np.linalg.lstsq(m_mouse, m_screen)
     quality = -log10(residuals.sum())
     return m_transform, quality
@@ -215,7 +240,7 @@ def calibrate(points, disable_rot):
         [mx 1] [a 0]   [sx 1]
         [mx 1] [e 1] = [sx 1]
         [... ]         [... ]
-        
+
         [my 1] [d 0]   [sy 1]
         [my 1] [f 1] = [sy 1]
         [... ]         [... ]
@@ -249,12 +274,12 @@ def use_cal(dev, new_cal):
     xinput('--set-prop', str(dev), prop_name, *cal_array)
 
 
-def main():
+def main_cli():
     devs = get_devs()
     print_devs(devs)
     preferred = choose_preferred(devs)
     dev = choose_dev(devs, preferred)
-    print()
+    print("")
 
     old_cal, old_cal_inv = read_cal(dev)
 
@@ -262,22 +287,31 @@ def main():
     if ask('Calibrate?'):
         n_points = choose_points()
         disable_rot = ask('Disable rotation?')
-        print()
+        print("")
 
-        points = show_tk(n_points, old_cal_inv)
+        points = Calibration().Show(n_points, old_cal_inv)
         if points:
             new_cal, quality = calibrate(points, disable_rot)
 
             print('New calibration:')
             print(new_cal)
             print('Quality (should be at least 3): %.1f' % quality)
-            print()
+            print("")
 
     if ask('Test?'):
         n_points = choose_points()
-        show_tk(n_points, old_cal_inv, new_cal)
+        ShowTk().ShowTk(n_points, old_cal_inv, new_cal)
 
     if new_cal is not None and ask('Use calibration?'):
         use_cal(dev, new_cal)
 
-main()
+
+def main_gui():
+    pass
+
+
+def main():
+    main_cli()
+
+if __name__ == '__main__':
+    main()
