@@ -22,6 +22,12 @@ if PY2:
 PROP_NAME = 'libinput Calibration Matrix'
 #PROP_NAME = 'Coordinate Transformation Matrix' # For Testing with any Device
 
+# Exceptions
+class NoInputDevicesError(Exception):
+    pass
+class CalPropertyError(Exception):
+    pass
+
 # XInput ---------------------------------------------------------------------
 class XInput():
 
@@ -32,22 +38,18 @@ class XInput():
                 re.findall(r'↳ (\w.+\w)\s+id=(\d+)\D+slave *pointer',
                            self._xinput('--list', '--short'))}
         if not devs:
-            print('No suitable input devices found')
-            exit(1)
-        return devs
+            raise NoInputDevicesError()
+        else:
+            return devs
 
     def get_cal(self, dev):
         stdout = self._xinput('--list-props', str(dev))
         line = re.search(PROP_NAME + r'.*:\s+(\S.+)', stdout)
         if not line:
-            print('Cal property not set; is this an xinput device?')
-            exit(1)
-        vals = np.matrix(line.group(1)).reshape(3, 3)
-
-        print('Old calibration:')
-        print(vals)
-        print("")
-        return vals, np.linalg.inv(vals)
+            raise CalPropertyError()
+        else:
+            vals = np.matrix(line.group(1)).reshape(3, 3)
+            return vals, np.linalg.inv(vals)
 
     def set_cal(self, dev, new_cal):
         cal_array = [str(x)+',' for x in new_cal.flatten().tolist()[0]]
@@ -290,51 +292,63 @@ class CLI():
     # Public Functions -------------------------------------------------------
 
     def run(self):
-        xinput = XInput()
-        calibration = Calibration()
+        try:
+            xinput = XInput()
+            calibration = Calibration()
 
-        devs = xinput.get_devs()
-        self._print_devs(devs)
-        preferred = self._choose_preferred(devs)
-        dev = self._choose_dev(devs, preferred)
-        print("")
+            devs = xinput.get_devs()
 
-        old_cal, old_cal_inv = xinput.get_cal(dev)
+            self._print_devs(devs)
+            preferred = self._choose_preferred(devs)
+            dev = self._choose_dev(devs, preferred)
+            print("")
 
-        new_cal = None
-        if not self._ask('Calibrate?'):
-            return
+            old_cal, old_cal_inv = xinput.get_cal(dev)
 
-        n_points = self._choose_points()
-        disable_rot = self._ask('Disable rotation?')
-        print("")
+            print('Old calibration:')
+            print(vals)
+            print("")
 
-        points = calibration.show(n_points, old_cal_inv)
-        if not points:
-            print("ERROR -> Points = None")
-            return;
+            new_cal = None
+            if not self._ask('Calibrate?'):
+                return
 
-        new_cal, quality = calibration.calibrate(points, disable_rot)
-        print('New calibration:')
-        print(new_cal)
-        print('Quality (should be at least 3): %.1f' % quality)
-        print("")
-
-        if new_cal is None:
-            print("ERROR -> Calibration = None")
-            return
-
-        if self._ask('Test?'):
             n_points = self._choose_points()
-            calibration.show(n_points, old_cal_inv, new_cal)
+            disable_rot = self._ask('Disable rotation?')
+            print("")
 
-        if not self._ask('Use calibration?'):
-            return
+            points = calibration.show(n_points, old_cal_inv)
+            if not points:
+                print("ERROR -> Points = None")
+                return;
 
-        xinput.set_cal(dev, new_cal)
+            new_cal, quality = calibration.calibrate(points, disable_rot)
+            print('New calibration:')
+            print(new_cal)
+            print('Quality (should be at least 3): %.1f' % quality)
+            print("")
 
-        if self._ask('Save calibration?'):
-            calibration.save(os.path.expanduser('~/.xcal'), dev, new_cal)
+            if new_cal is None:
+                print("ERROR -> Calibration = None")
+                return
+
+            if self._ask('Test?'):
+                n_points = self._choose_points()
+                calibration.show(n_points, old_cal_inv, new_cal)
+
+            if not self._ask('Use calibration?'):
+                return
+
+            xinput.set_cal(dev, new_cal)
+
+            if self._ask('Save calibration?'):
+                calibration.save(os.path.expanduser('~/.xcal'), dev, new_cal)
+
+        except NoInputDevicesError:
+            print('No suitable input devices found')
+
+        except CalPropertyError:
+            print('Cal property not set; is this an xinput device?')
 
     # Private Functions ------------------------------------------------------
 
@@ -404,28 +418,33 @@ class GUI():
         app.MainLoop()
 
     def _device_frame(self):
-        self._frame = wx.Frame(None,
-                        size = wx.Size(320, 240),
-                        style = wx.CLOSE_BOX | wx.STAY_ON_TOP,
-                        title = "Calibration - Select Device")
+        try:
+            self._frame = wx.Frame(None,
+                            size = wx.Size(320, 240),
+                            style = wx.CLOSE_BOX | wx.STAY_ON_TOP,
+                            title = "Calibration - Select Device")
 
-        self._panel = wx.Panel(self._frame)
+            self._panel = wx.Panel(self._frame)
 
-        self._lb = wx.ListBox(self._panel,
-                   pos = wx.Point(10, 10),
-                   size = wx.Size(290, 150))
+            self._lb = wx.ListBox(self._panel,
+                       pos = wx.Point(10, 10),
+                       size = wx.Size(290, 150))
 
-        devs = self._xinput.get_devs()
-        for i, name in sorted(devs.items()):
-            self._lb.Append(name)
+            devs = self._xinput.get_devs()
+            for i, name in sorted(devs.items()):
+                self._lb.Append(name)
 
-        btn = wx.Button(self._panel,
-                        label = "Ok",
-                        pos = wx.Point(10, 175),
-                        size = wx.Size(290, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_1_ok)
+            btn = wx.Button(self._panel,
+                            label = "Ok",
+                            pos = wx.Point(10, 175),
+                            size = wx.Size(290, 25))
+            btn.Bind(wx.EVT_BUTTON, self._on_device_ok)
 
-        self._frame.Show()
+            self._frame.Show()
+
+        except NoInputDevicesError:
+            self._frame.Close()
+            self._except_frame('No suitable input devices found')
 
     def _options_frame(self):
         self._frame = wx.Frame(None,
@@ -453,34 +472,39 @@ class GUI():
                         label = "Ok",
                         pos = wx.Point(10, 175),
                         size = wx.Size(290, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_2_ok)
+        btn.Bind(wx.EVT_BUTTON, self._on_options_ok)
 
         self._frame.Show()
 
     def _execute_frame(self):
-        self._frame = wx.Frame(None,
-                        size = wx.Size(320, 240),
-                        style = wx.CLOSE_BOX | wx.STAY_ON_TOP,
-                        title = "Calibration - Execute")
+        try:
+            self._frame = wx.Frame(None,
+                            size = wx.Size(320, 240),
+                            style = wx.CLOSE_BOX | wx.STAY_ON_TOP,
+                            title = "Calibration - Execute")
 
-        self._panel = wx.Panel(self._frame)
+            self._panel = wx.Panel(self._frame)
 
-        tc = wx.TextCtrl(self._panel,
-                        pos = wx.Point(10, 10),
-                        size = wx.Size(290, 150),
-                        style = wx.TE_MULTILINE)
+            tc = wx.TextCtrl(self._panel,
+                            pos = wx.Point(10, 10),
+                            size = wx.Size(290, 150),
+                            style = wx.TE_MULTILINE)
 
-        self._old_cal, self._old_cal_inv = self._xinput.get_cal(self._device)
-        tc.AppendText("Old Calibration:\n")
-        tc.AppendText(repr(self._old_cal))
+            self._old_cal, self._old_cal_inv = self._xinput.get_cal(self._device)
+            tc.AppendText("Old Calibration:\n")
+            tc.AppendText(repr(self._old_cal))
 
-        btn = wx.Button(self._panel,
-                        label = "GO",
-                        pos = wx.Point(10, 175),
-                        size = wx.Size(290, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_3_ok)
+            btn = wx.Button(self._panel,
+                            label = "GO",
+                            pos = wx.Point(10, 175),
+                            size = wx.Size(290, 25))
+            btn.Bind(wx.EVT_BUTTON, self._on_execute_ok)
 
-        self._frame.Show()
+            self._frame.Show()
+
+        except CalPropertyError:
+            self._frame.Close()
+            self._except_frame('Cal property not set; is this an xinput device?')
 
     def _calibration_frame(self):
         self._frame = wx.Frame(None,
@@ -506,7 +530,7 @@ class GUI():
                         label = "Ok",
                         pos = wx.Point(10, 175),
                         size = wx.Size(290, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_4_ok)
+        btn.Bind(wx.EVT_BUTTON, self._on_calibration_ok)
 
         self._frame.Show()
 
@@ -527,13 +551,13 @@ class GUI():
                         label = "Yes",
                         pos = wx.Point(10, 175),
                         size = wx.Size(140, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_5_yes)
+        btn.Bind(wx.EVT_BUTTON, self._on_activate_ok)
 
         btn = wx.Button(self._panel,
                         label = "No",
                         pos = wx.Point(160, 175),
                         size = wx.Size(140, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_5_no)
+        btn.Bind(wx.EVT_BUTTON, self._on_close)
 
         self._frame.Show()
 
@@ -554,19 +578,44 @@ class GUI():
                         label = "Yes",
                         pos = wx.Point(10, 175),
                         size = wx.Size(140, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_6_yes)
+        btn.Bind(wx.EVT_BUTTON, self._on_save_ok)
 
         btn = wx.Button(self._panel,
                         label = "No",
                         pos = wx.Point(160, 175),
                         size = wx.Size(140, 25))
-        btn.Bind(wx.EVT_BUTTON, self._on_button_6_no)
+        btn.Bind(wx.EVT_BUTTON, self._on_close)
 
         self._frame.Show()
 
+    def _except_frame(self, message):
+        self._frame = wx.Frame(None,
+                        size = wx.Size(320, 240),
+                        style = wx.CLOSE_BOX | wx.STAY_ON_TOP,
+                        title = "Calibration - Calibration")
+
+        self._panel = wx.Panel(self._frame)
+
+        tc = wx.TextCtrl(self._panel,
+                        pos = wx.Point(10, 10),
+                        size = wx.Size(290, 150),
+                        style = wx.TE_MULTILINE)
+
+        tc.AppendText('Error:\n')
+        tc.AppendText(message)
+
+        btn = wx.Button(self._panel,
+                        label = "Ok",
+                        pos = wx.Point(10, 175),
+                        size = wx.Size(290, 25))
+        btn.Bind(wx.EVT_BUTTON, self._on_close)
+
+        self._frame.Show()
+
+
     # Events -----------------------------------------------------------------
 
-    def _on_button_1_ok(self, event):
+    def _on_device_ok(self, event):
 
         index = self._lb.GetSelection()
         if index >= 0:
@@ -575,7 +624,7 @@ class GUI():
             self._frame.Close()
             self._options_frame()
 
-    def _on_button_2_ok(self, event):
+    def _on_options_ok(self, event):
         if self._rbRotation.GetSelection() == 1:
             self._disable_rotation = True
         if self._rbPoints.GetSelection() == 0:
@@ -587,27 +636,24 @@ class GUI():
         self._frame.Close()
         self._execute_frame()
 
-    def _on_button_3_ok(self, event):
+    def _on_execute_ok(self, event):
         self._frame.Close()
         self._calibration_frame()
 
-    def _on_button_4_ok(self, event):
+    def _on_calibration_ok(self, event):
         self._frame.Close()
         self._activate_frame()
 
-    def _on_button_5_yes(self, event):
+    def _on_activate_ok(self, event):
         self._xinput.set_cal(self._device, self._new_cal)
         self._frame.Close()
         self._save_frame()
 
-    def _on_button_5_no(self, event):
-        self._frame.Close()
-
-    def _on_button_6_yes(self, event):
+    def _on_save_ok(self, event):
         self._calibration.save(os.path.expanduser('~/.xcal'), self._device, self._new_cal)
         self._frame.Close()
 
-    def _on_button_6_no(self, event):
+    def _on_close(self, event):
         self._frame.Close()
 
 # Main -----------------------------------------------------------------------
