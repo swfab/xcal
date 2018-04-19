@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 # requires python-configparser, python-numpy, python-tk, python-wxgtk3.0
 
+# Imports
 from __future__ import division
 from __future__ import print_function
 import argparse
@@ -12,10 +13,12 @@ import re
 import subprocess
 import sys
 
+# Python 2 Compatibilit
 PY2 = sys.version_info < (3,0,0)
 if PY2:
     input = raw_input
 
+# Constants
 PROP_NAME = 'libinput Calibration Matrix'
 #PROP_NAME = 'Coordinate Transformation Matrix' # For Testing with any Device
 
@@ -132,12 +135,46 @@ class Calibration():
             [mx my 1] [c d 0] = [sx sy 1]
             [...    ] [e f 1]   [...    ]
             '''
-            m_transform, quality = self._fit(screen_pts=[(p['sx'], p['sy']) for p in points],
-                                             mouse_pts=[(p['mx'], p['my']) for p in points])
+            m_transform, quality = self._fit(
+                screen_pts=[(p['sx'], p['sy']) for p in points],
+                mouse_pts=[(p['mx'], p['my']) for p in points])
             m_transform[:, 2] = ([0], [0], [1])
 
         m_transform = m_transform.getT()
         return m_transform, quality
+
+    def load(self, f):
+
+        config = configparser.ConfigParser()
+        config.read(f)
+        device = config['Device']['Name']
+        cal = np.matrix([
+                [config['Matrix'].getfloat('a0'),
+                 config['Matrix'].getfloat('a1'),
+                 config['Matrix'].getfloat('a2')],
+                [config['Matrix'].getfloat('b0'),
+                 config['Matrix'].getfloat('b1'),
+                 config['Matrix'].getfloat('b2')],
+                [config['Matrix'].getfloat('c0'),
+                 config['Matrix'].getfloat('c1'),
+                 config['Matrix'].getfloat('c2')]])
+        return device, cal
+
+    def save(self, f, device, cal):
+        config = configparser.ConfigParser()
+        config['Device'] = {'Name' : device}
+        config['Matrix'] = {'a0' : cal[0,0],
+                            'a1' : cal[0,1],
+                            'a2' : cal[0,2],
+                            'b0' : cal[1,0],
+                            'b1' : cal[1,1],
+                            'b2' : cal[1,2],
+                            'c0' : cal[2,0],
+                            'c1' : cal[2,1],
+                            'c2' : cal[2,2]}
+        with open(f, 'w') as configfile:
+            config.write(configfile)
+
 
     # Private Functions ------------------------------------------------------
 
@@ -265,26 +302,39 @@ class CLI():
         old_cal, old_cal_inv = xinput.get_cal(dev)
 
         new_cal = None
-        if self._ask('Calibrate?'):
-            n_points = self._choose_points()
-            disable_rot = self._ask('Disable rotation?')
-            print("")
+        if not self._ask('Calibrate?'):
+            return
 
-            points = calibration.show(n_points, old_cal_inv)
-            if points:
-                new_cal, quality = calibration.calibrate(points, disable_rot)
+        n_points = self._choose_points()
+        disable_rot = self._ask('Disable rotation?')
+        print("")
 
-                print('New calibration:')
-                print(new_cal)
-                print('Quality (should be at least 3): %.1f' % quality)
-                print("")
+        points = calibration.show(n_points, old_cal_inv)
+        if not points:
+            print("ERROR -> Points = None")
+            return;
+
+        new_cal, quality = calibration.calibrate(points, disable_rot)
+        print('New calibration:')
+        print(new_cal)
+        print('Quality (should be at least 3): %.1f' % quality)
+        print("")
+
+        if new_cal is None:
+            print("ERROR -> Calibration = None")
+            return
 
         if self._ask('Test?'):
             n_points = self._choose_points()
             calibration.show(n_points, old_cal_inv, new_cal)
 
-        if new_cal is not None and self._ask('Use calibration?'):
-            xinput.set_cal(dev, new_cal)
+        if not self._ask('Use calibration?'):
+            return
+
+        xinput.set_cal(dev, new_cal)
+
+        if self._ask('Save calibration?'):
+            calibration.save(os.path.expanduser('~/.xcal'), dev, new_cal)
 
     # Private Functions ------------------------------------------------------
 
@@ -554,20 +604,7 @@ class GUI():
         self._frame.Close()
 
     def _on_button_6_yes(self, event):
-        config = configparser.ConfigParser()
-        config['Device'] = {'Name' : self._device}
-        config['Matrix'] = {'a0' : self._new_cal[0,0],
-                            'a1' : self._new_cal[0,1],
-                            'a2' : self._new_cal[0,2],
-                            'b0' : self._new_cal[1,0],
-                            'b1' : self._new_cal[1,1],
-                            'b2' : self._new_cal[1,2],
-                            'c0' : self._new_cal[2,0],
-                            'c1' : self._new_cal[2,1],
-                            'c2' : self._new_cal[2,2]}
-
-        with open(os.path.expanduser('~/.calibration'), 'w') as configfile:
-            config.write(configfile)
+        self._calibration.save(os.path.expanduser('~/.xcal'), self._device, self._new_cal)
         self._frame.Close()
 
     def _on_button_6_no(self, event):
@@ -589,19 +626,7 @@ def main():
     args = parser.parse_args()
 
     if args.activate:
-        config = configparser.ConfigParser()
-        config.read(os.path.expanduser('~/.calibration'))
-        device = config['Device']['Name']
-        cal = np.matrix([
-                [config['Matrix'].getfloat('a0'),
-                 config['Matrix'].getfloat('a1'),
-                 config['Matrix'].getfloat('a2')],
-                [config['Matrix'].getfloat('b0'),
-                 config['Matrix'].getfloat('b1'),
-                 config['Matrix'].getfloat('b2')],
-                [config['Matrix'].getfloat('c0'),
-                 config['Matrix'].getfloat('c1'),
-                 config['Matrix'].getfloat('c2')]])
+        device, cal = Calibration().load(os.path.expanduser('~/.xcal'))
         XInput().set_cal(device, cal)
         print("New Calibration:")
         print(cal)
